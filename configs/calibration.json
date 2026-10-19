@@ -1,0 +1,73 @@
+{
+    "leader_port": "/dev/ttyACM1",
+    "follower_port": "/dev/ttyACM0",
+    "num_joints": 6,
+    "joints": {
+        "joint_1": {
+            "name": "1번 Base (베이스 회전)",
+            "leader_zero": 2094,
+            "follower_zero": 2200,
+            "direction": 1,
+            "min": 1257,
+            "max": 3481,
+            "follower_min": 1257,
+            "follower_max": 3481
+        },
+        "joint_2": {
+            "name": "2번 Shoulder (어깨)",
+            "leader_zero": 2018,
+            "follower_zero": 2070,
+            "direction": 1,
+            "min": 814,
+            "max": 3238,
+            "follower_min": 814,
+            "follower_max": 3238
+        },
+        "joint_3": {
+            "name": "3번 Elbow (팔꿈치)",
+            "leader_zero": 2173,
+            "follower_zero": 1553,
+            "direction": 1,
+            "min": 538,
+            "max": 2602,
+            "follower_min": 538,
+            "follower_max": 2602
+        },
+        "joint_4": {
+            "name": "4번 Wrist Pitch (손목 상하)",
+            "leader_zero": 1943,
+            "follower_zero": 2319,
+            "direction": 1,
+            "min": 1167,
+            "max": 3300,
+            "follower_min": 1167,
+            "follower_max": 3300
+        },
+        "joint_5": {
+            "name": "5번 Wrist Roll (손목 회전)",
+            "leader_zero": 2004,
+            "follower_zero": 1823,
+            "direction": 1,
+            "min": 741,
+            "max": 2827,
+            "follower_min": 741,
+            "follower_max": 2827
+        },
+        "joint_6": {
+            "name": "6번 Gripper (그리퍼)",
+            "leader_zero": 1764,
+            "follower_zero": 1298,
+            "direction": 1,
+            "min": 1279,
+            "max": 2421,
+            "follower_min": 1279,
+            "follower_max": 2421
+        }
+    },
+    "gripper": {
+        "leader_open": 2961,
+        "leader_close": 1768,
+        "follower_open": 2476,
+        "follower_close": 1303
+    }
+}
