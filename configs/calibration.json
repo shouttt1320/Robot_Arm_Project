@@ -69,5 +69,7 @@
         "leader_close": 1768,
         "follower_open": 2476,
         "follower_close": 1303
-    }
+    },
+    "leader_serial": "5B61032703",
+    "follower_serial": "5B3D048312"
 }

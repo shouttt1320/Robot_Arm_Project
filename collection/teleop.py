@@ -18,8 +18,13 @@ if PROJECT_ROOT not in sys.path:
 
 try:
     from hardware.sts3215_driver import STS3215Driver
+    from hardware.identify_arms import find_port_by_serial
 except ImportError:
     from sts3215_driver import STS3215Driver
+    try:
+        from identify_arms import find_port_by_serial
+    except ImportError:
+        find_port_by_serial = None
 
 
 def clamp(val, min_val, max_val):
@@ -40,8 +45,18 @@ class TeleoperationController:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
-        self.leader_port = self.config["leader_port"]
-        self.follower_port = self.config["follower_port"]
+        raw_leader_port = self.config.get("leader_port", "/dev/ttyACM0")
+        raw_follower_port = self.config.get("follower_port", "/dev/ttyACM1")
+        leader_serial = self.config.get("leader_serial", "")
+        follower_serial = self.config.get("follower_serial", "")
+
+        if find_port_by_serial and (leader_serial or follower_serial):
+            self.leader_port = find_port_by_serial(leader_serial, default_port=raw_leader_port)
+            self.follower_port = find_port_by_serial(follower_serial, default_port=raw_follower_port)
+        else:
+            self.leader_port = raw_leader_port
+            self.follower_port = raw_follower_port
+
         self.joints_cfg = self.config["joints"]
         self.gripper_cfg = self.config["gripper"]
 

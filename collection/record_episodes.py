@@ -28,9 +28,14 @@ if PROJECT_ROOT not in sys.path:
 try:
     from hardware.camera_interface import MultiCameraCapture
     from hardware.sts3215_driver import STS3215Driver
+    from hardware.identify_arms import find_port_by_serial
 except ImportError:
     from camera_interface import MultiCameraCapture
     from sts3215_driver import STS3215Driver
+    try:
+        from identify_arms import find_port_by_serial
+    except ImportError:
+        find_port_by_serial = None
 
 
 class RawTerminalInput:
@@ -74,8 +79,10 @@ def clamp(val, min_val, max_val):
     return max(min_val, min(max_val, val))
 
 
-def raw_to_rad(raw_val: int) -> float:
+def raw_to_rad(raw_val) -> float:
     """STS3215 Raw 값 (0~4095, 360도)을 라디안(-pi ~ +pi)으로 변환"""
+    if raw_val is None:
+        raw_val = 2048
     return (raw_val - 2048) * (2.0 * np.pi / 4096.0)
 
 
@@ -86,9 +93,12 @@ class EpisodeRecorder:
         task_name: str = "so101_pick_place",
         data_dir: str = "data",
         config_path: str = "configs/calibration.json",
-        top_cam_id: int = 4,
-        wrist_cam_id: int = 6,
+        top_cam_id: int = -1,
+        wrist_cam_id: int = -1,
+        left_cam_id: int = -1,
+        right_cam_id: int = -1,
         fps: int = 30,
+        focus: int = 25,
         show_preview: bool = True,
     ):
         self.task_name = task_name
@@ -108,8 +118,18 @@ class EpisodeRecorder:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
-        self.leader_port = self.config["leader_port"]
-        self.follower_port = self.config["follower_port"]
+        raw_leader_port = self.config.get("leader_port", "/dev/ttyACM0")
+        raw_follower_port = self.config.get("follower_port", "/dev/ttyACM1")
+        leader_serial = self.config.get("leader_serial", "")
+        follower_serial = self.config.get("follower_serial", "")
+
+        if find_port_by_serial and (leader_serial or follower_serial):
+            self.leader_port = find_port_by_serial(leader_serial, default_port=raw_leader_port)
+            self.follower_port = find_port_by_serial(follower_serial, default_port=raw_follower_port)
+        else:
+            self.leader_port = raw_leader_port
+            self.follower_port = raw_follower_port
+
         self.joints_cfg = self.config["joints"]
         self.gripper_cfg = self.config["gripper"]
 
@@ -121,18 +141,32 @@ class EpisodeRecorder:
             self.follower_port, baudrate=1000000, timeout=0.03
         )
 
-        # 3. 카메라 설정
+        # 3. 카메라 설정 (양안 카메라 및 Top/Wrist 호환 지원)
         self.cam_dict = {}
-        if top_cam_id >= 0:
+        if left_cam_id >= 0:
+            self.cam_dict["cam_left"] = left_cam_id
+        if right_cam_id >= 0:
+            self.cam_dict["cam_right"] = right_cam_id
+
+        if top_cam_id >= 0 and "cam_left" not in self.cam_dict:
             self.cam_dict["top"] = top_cam_id
-        if wrist_cam_id >= 0:
+        if wrist_cam_id >= 0 and "cam_right" not in self.cam_dict:
             self.cam_dict["wrist"] = wrist_cam_id
 
+        # 인자가 지정되지 않은 경우 기본 양안 카메라(video4, video6) 설정
         if not self.cam_dict:
-            raise ValueError("적어도 1개 이상의 카메라가 지정되어야 합니다!")
+            self.cam_dict["cam_left"] = 4
+            self.cam_dict["cam_right"] = 6
 
+        # 초점 고정(Auto Focus Lock) 적용하여 MultiCameraCapture 초기화
+        focus_dict = {name: focus for name in self.cam_dict}
         self.camera_manager = MultiCameraCapture(
-            self.cam_dict, width=640, height=480, fps=fps
+            self.cam_dict,
+            width=640,
+            height=480,
+            fps=fps,
+            disable_autofocus=True,
+            focus_dict=focus_dict,
         )
 
     def connect(self):
@@ -213,12 +247,46 @@ class EpisodeRecorder:
             return 255
 
         cam_imgs = []
-        for name in ["top", "wrist"]:
-            if name in frames and frames[name] is not None:
-                img = frames[name].copy()
-                label = f"CAM: {name.upper()}"
-                cv2.putText(img, label, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-                cam_imgs.append(img)
+        target_h, target_w = 480, 640
+
+        # 등록된 카메라들을 순회 (cam_left, cam_right, top, wrist 등 모두 지원)
+        cam_names = sorted(list(self.cam_dict.keys()), key=lambda k: (0 if "left" in k or "top" in k else 1, k))
+
+        for name in cam_names:
+            dev_id = self.cam_dict.get(name, "?")
+            frame = frames.get(name)
+
+            if frame is not None:
+                img = frame.copy()
+                if img.shape[:2] != (target_h, target_w):
+                    img = cv2.resize(img, (target_w, target_h))
+            else:
+                img = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+                cv2.putText(img, f"NO SIGNAL: {name} (video{dev_id})", (50, target_h // 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            # 카메라별 테마 색상 및 라벨 설정
+            if "left" in name.lower():
+                header_color = (50, 180, 50)  # 초록색
+                label = f"◀ LEFT EYE (/dev/video{dev_id})"
+            elif "right" in name.lower():
+                header_color = (30, 120, 255)  # 주황색
+                label = f"RIGHT EYE ▶ (/dev/video{dev_id})"
+            elif "top" in name.lower():
+                header_color = (180, 100, 30)
+                label = f"TOP CAM (/dev/video{dev_id})"
+            elif "wrist" in name.lower():
+                header_color = (180, 30, 150)
+                label = f"WRIST CAM (/dev/video{dev_id})"
+            else:
+                header_color = (80, 80, 80)
+                label = f"{name.upper()} (/dev/video{dev_id})"
+
+            # 상단 헤더 바
+            cv2.rectangle(img, (0, 0), (target_w, 36), header_color, -1)
+            cv2.putText(img, label, (12, 25), cv2.FONT_HERSHEY_DUPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.rectangle(img, (0, 0), (target_w - 1, target_h - 1), header_color, 2)
+            cam_imgs.append(img)
 
         if not cam_imgs:
             return 255
@@ -226,23 +294,28 @@ class EpisodeRecorder:
         combined = np.hstack(cam_imgs)
         h, w, _ = combined.shape
 
+        # 하단 상태 바
         if status == "RECORDING":
             # 빨간색 녹화 바
             bar_color = (0, 0, 210)
             time_str = time.strftime("%M:%S", time.gmtime(elapsed)) + f".{int((elapsed % 1) * 10)}"
-            status_text = f"● REC [{step:4d} frames | {time_str}] - Press SPACEBAR to STOP"
+            status_text = f"● RECORDING [{step:4d} frames | {time_str}] - Press [SPACEBAR] to STOP"
         else:
             # 대기 바
-            bar_color = (50, 50, 50)
-            status_text = "STANDBY: Move robot to start pose, press SPACEBAR to RECORD"
+            bar_color = (40, 40, 40)
+            status_text = "STANDBY: Move robot to start pose, press [SPACEBAR] to START (Quit: 'q')"
 
-        cv2.rectangle(combined, (0, h - 50), (w, h), bar_color, -1)
-        cv2.putText(combined, status_text, (20, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255, 255, 255), 2)
+        bar_height = 42
+        cv2.rectangle(combined, (0, h - bar_height), (w, h), bar_color, -1)
+        cv2.putText(combined, status_text, (20, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
 
+        window_title = "SO-101 Dual Eyes Data Collection [SPACE: Start/Stop | Q: Quit]"
         try:
-            cv2.imshow("SO-101 Data Collection [Space: Start/Stop, Q: Quit]", combined)
+            cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
+            cv2.imshow(window_title, combined)
             return cv2.waitKey(1) & 0xFF
-        except Exception:
+        except Exception as e:
+            print(f"[Warning] GUI 프리뷰 실패: {e}")
             self.show_preview = False
             return 255
 
@@ -300,6 +373,8 @@ class EpisodeRecorder:
         recorded_images = {name: [] for name in self.cam_dict.keys()}
         recorded_qpos = []
         recorded_action = []
+        last_raw_qpos = {}
+        last_raw_action = {}
 
         print("\n🔴 [RECORDING 시작!] 시간 제한 없이 원하는 만큼 편안하게 조작하세요.")
         print("   👉 작업이 끝나면 [스페이스바]를 다시 누르세요!\n")
@@ -334,13 +409,27 @@ class EpisodeRecorder:
 
             # 3. 팔로워 현재 관절값 읽기 (qpos)
             f_pos = self.f_driver.read_positions(range(1, 7))
-            curr_qpos = [
-                raw_to_rad(f_pos.get(i, f_goals.get(i, 2048)))
-                for i in range(1, 7)
-            ]
-            curr_action = [
-                raw_to_rad(f_goals.get(i, 2048)) for i in range(1, 7)
-            ]
+            curr_qpos = []
+            for i in range(1, 7):
+                val = f_pos.get(i)
+                if val is None:
+                    val = f_goals.get(i)
+                if val is None and last_raw_qpos.get(i) is not None:
+                    val = last_raw_qpos[i]
+                if val is None:
+                    val = 2048
+                last_raw_qpos[i] = val
+                curr_qpos.append(raw_to_rad(val))
+
+            curr_action = []
+            for i in range(1, 7):
+                val = f_goals.get(i)
+                if val is None and last_raw_action.get(i) is not None:
+                    val = last_raw_action[i]
+                if val is None:
+                    val = 2048
+                last_raw_action[i] = val
+                curr_action.append(raw_to_rad(val))
 
             recorded_qpos.append(curr_qpos)
             recorded_action.append(curr_action)
@@ -495,14 +584,32 @@ def main():
     parser.add_argument(
         "--top-cam",
         type=int,
-        default=4,
-        help="외부 상단 카메라 인덱스 (기본값: 4, 사용안함: -1)",
+        default=-1,
+        help="외부 상단 카메라 인덱스 (기본값: -1)",
     )
     parser.add_argument(
         "--wrist-cam",
         type=int,
+        default=-1,
+        help="손목 카메라 인덱스 (기본값: -1)",
+    )
+    parser.add_argument(
+        "--left-cam",
+        type=int,
+        default=4,
+        help="좌안(Left Eye) 카메라 인덱스 (기본값: 4)",
+    )
+    parser.add_argument(
+        "--right-cam",
+        type=int,
         default=6,
-        help="손목 카메라 인덱스 (기본값: 6, 사용안함: -1)",
+        help="우안(Right Eye) 카메라 인덱스 (기본값: 6)",
+    )
+    parser.add_argument(
+        "--focus",
+        type=int,
+        default=25,
+        help="초점 고정 값 (0~255, 기본값: 25)",
     )
     parser.add_argument(
         "--fps",
@@ -521,7 +628,10 @@ def main():
         task_name=args.task,
         top_cam_id=args.top_cam,
         wrist_cam_id=args.wrist_cam,
+        left_cam_id=args.left_cam,
+        right_cam_id=args.right_cam,
         fps=args.fps,
+        focus=args.focus,
         show_preview=not args.no_preview,
     )
 

@@ -86,4 +86,13 @@ htmlcov/
 # 9. Temporary & Scratch Files
 scratch/
 *.tmp
-*.bak
+*.bak*
+
+# 10. Upstream External Repositories (exclude cloned repos with their own .git)
+upstream_models/*
+!upstream_models/act/
+
+# 11. Analysis Visualizations & Outputs
+analysis/outputs/
+analysis/outputs_*/
+

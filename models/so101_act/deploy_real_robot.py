@@ -21,9 +21,14 @@ import torchvision.transforms as transforms
 try:
     from hardware.camera_interface import MultiCameraCapture
     from hardware.sts3215_driver import STS3215Driver
+    from hardware.identify_arms import find_port_by_serial
 except ImportError:
     from camera_interface import MultiCameraCapture
     from sts3215_driver import STS3215Driver
+    try:
+        from identify_arms import find_port_by_serial
+    except ImportError:
+        find_port_by_serial = None
 
 from so101_act.config import (
     CAMERA_NAMES,
@@ -89,7 +94,15 @@ class RealRobotDeployer:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = json.load(f)
 
-        self.follower_port = self.config["follower_port"]
+        raw_follower_port = self.config.get("follower_port", "/dev/ttyACM1")
+        follower_serial = self.config.get("follower_serial", "")
+        if find_port_by_serial and follower_serial:
+            self.follower_port = find_port_by_serial(follower_serial, default_port=raw_follower_port)
+            if self.follower_port != raw_follower_port:
+                print(f"🔍 [포트 자동 매칭] 고유 시리얼({follower_serial}) 기반 팔로워 포트 인식: {self.follower_port}")
+        else:
+            self.follower_port = raw_follower_port
+
         self.joints_cfg = self.config["joints"]
         self.gripper_cfg = self.config["gripper"]
 
